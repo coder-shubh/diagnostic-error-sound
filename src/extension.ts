@@ -1,74 +1,247 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-// `play-sound` has no official TypeScript types, so we import it via require.
-// It uses common audio players available on each OS (afplay, aplay, mplayer, etc.).
+/**
+ * `play-sound` has no official TypeScript types, so we import it via require.
+ * It shells out to common OS players (macOS: afplay, Linux: aplay/paplay, Windows: powershell/wmplayer, etc.)
+ */
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const player = require("play-sound")({});
+const createPlayer = require("play-sound");
 
-// Minimum delay between sound plays in milliseconds to avoid spamming.
-const SOUND_DEBOUNCE_MS = 1500;
+type PlayMode = "transition" | "increase" | "any";
 
-let lastPlayTime = 0;
 let diagnosticsListenerDisposable: vscode.Disposable | undefined;
 let activeEditorListenerDisposable: vscode.Disposable | undefined;
+let configurationListenerDisposable: vscode.Disposable | undefined;
+
+let outputChannel: vscode.OutputChannel | undefined;
+
+// Tracks last-known error counts per document.
+const lastErrorCountByUri = new Map<string, number>();
+
+// Debounce tracking (global + per document).
+let lastPlayAtGlobalMs = 0;
+const lastPlayAtByUriMs = new Map<string, number>();
+
+// Holds the current player instance (recreated if settings change).
+let player: { play: Function } | undefined;
+
+// Only show a “missing sound file” warning once per session.
+let didWarnMissingSounds = false;
+
+interface Settings {
+  enabled: boolean;
+  debounceMs: number;
+  playMode: PlayMode;
+  soundFiles: string[];
+  preferredPlayer?: string;
+}
+
+let settings: Settings = {
+  enabled: true,
+  debounceMs: 1500,
+  playMode: "transition",
+  soundFiles: ["error.mp3", "error2.mp3", "error3.mp3"],
+  preferredPlayer: undefined
+};
 
 /**
- * Picks one of several configured sound files at random.
- * You can change or extend this list with your own filenames.
+ * Logs to an OutputChannel (and console as a fallback).
  */
-function pickRandomErrorSoundFilename(): string {
-  const candidates = [
-    "error.mp3",
-    "error2.mp3",
-    "error3.mp3"
-  ];
+function log(message: string, ...args: unknown[]): void {
+  const line =
+    args.length > 0 ? `${message} ${args.map(String).join(" ")}` : message;
 
-  const index = Math.floor(Math.random() * candidates.length);
-  return candidates[index];
+  if (!outputChannel) {
+    console.log(line);
+    return;
+  }
+
+  outputChannel.appendLine(line);
 }
 
 /**
- * Plays an error sound from the extension's media folder, with simple debouncing.
- * Each call randomly chooses one of several sound files.
+ * Loads extension settings from VS Code configuration.
  */
-function playErrorSound(context: vscode.ExtensionContext): void {
-  const now = Date.now();
-  if (now - lastPlayTime < SOUND_DEBOUNCE_MS) {
-    return;
-  }
-  lastPlayTime = now;
+function loadSettings(): void {
+  const cfg = vscode.workspace.getConfiguration("diagnosticErrorSound");
 
-  const filename = pickRandomErrorSoundFilename();
-  const soundPath = path.join(context.extensionPath, "media", filename);
+  settings = {
+    enabled: cfg.get<boolean>("enabled", true),
+    debounceMs: Math.max(0, cfg.get<number>("debounceMs", 1500)),
+    playMode: cfg.get<PlayMode>("playMode", "transition"),
+    soundFiles: cfg.get<string[]>("soundFiles", [
+      "error.mp3",
+      "error2.mp3",
+      "error3.mp3"
+    ]),
+    preferredPlayer: cfg.get<string | undefined>("player")
+  };
 
-  player.play(soundPath, (err: unknown) => {
-    if (err) {
-      // Swallow the error and show a warning once in the VS Code console output.
-      console.warn(
-        "[Diagnostic Error Sound] Failed to play sound:",
-        filename,
-        err
-      );
+  // Recreate the player if needed.
+  const playerOptions =
+    settings.preferredPlayer && settings.preferredPlayer.trim().length > 0
+      ? { player: settings.preferredPlayer.trim() }
+      : {};
+  player = createPlayer(playerOptions);
+}
+
+/**
+ * Resolves configured sound files to absolute paths and filters out missing files.
+ *
+ * Rules:
+ * - Relative entries are resolved under `media/` in the extension folder.
+ * - Absolute entries are used as-is.
+ */
+function resolveExistingSoundPaths(
+  context: vscode.ExtensionContext
+): string[] {
+  const mediaDir = path.join(context.extensionPath, "media");
+  const unique = new Set(settings.soundFiles);
+
+  const resolved = [...unique].map((entry) => {
+    const trimmed = (entry ?? "").trim();
+    if (!trimmed) {
+      return "";
+    }
+    return path.isAbsolute(trimmed) ? trimmed : path.join(mediaDir, trimmed);
+  });
+
+  return resolved.filter((p) => {
+    if (!p) return false;
+    try {
+      return fs.existsSync(p) && fs.statSync(p).isFile();
+    } catch {
+      return false;
     }
   });
 }
 
 /**
+ * Randomly picks one existing sound path to play.
+ */
+function pickRandomExistingSoundPath(
+  context: vscode.ExtensionContext
+): { soundPath?: string; displayName?: string } {
+  const candidates = resolveExistingSoundPaths(context);
+
+  if (candidates.length === 0) {
+    return {};
+  }
+
+  const idx = Math.floor(Math.random() * candidates.length);
+  const soundPath = candidates[idx];
+  return { soundPath, displayName: path.basename(soundPath) };
+}
+
+/**
+ * Plays an error sound, safely:
+ * - respects global + per-file debouncing
+ * - checks sound file existence
+ * - logs useful errors without crashing the extension host
+ */
+function playErrorSound(
+  context: vscode.ExtensionContext,
+  documentKey: string
+): void {
+  if (!settings.enabled) {
+    return;
+  }
+
+  const now = Date.now();
+  const lastDocPlay = lastPlayAtByUriMs.get(documentKey) ?? 0;
+
+  const debounce = settings.debounceMs;
+  if (debounce > 0) {
+    if (now - lastPlayAtGlobalMs < debounce) return;
+    if (now - lastDocPlay < debounce) return;
+  }
+
+  const { soundPath, displayName } = pickRandomExistingSoundPath(context);
+  if (!soundPath) {
+    if (!didWarnMissingSounds) {
+      didWarnMissingSounds = true;
+      const mediaDir = path.join(context.extensionPath, "media");
+      vscode.window.showWarningMessage(
+        `Diagnostic Error Sound: No sound files found. Add one of these under ${mediaDir}: ${settings.soundFiles.join(
+          ", "
+        )}`
+      );
+    }
+    log(
+      "[Diagnostic Error Sound] No sound files found. Expected one of:",
+      settings.soundFiles.join(", ")
+    );
+    return;
+  }
+
+  try {
+    if (!player) {
+      loadSettings();
+    }
+
+    lastPlayAtGlobalMs = now;
+    lastPlayAtByUriMs.set(documentKey, now);
+
+    player!.play(soundPath, (err: unknown) => {
+      if (err) {
+        // Keep running even if playback fails (missing system player, unsupported format, etc.).
+        log(
+          "[Diagnostic Error Sound] Failed to play:",
+          displayName ?? soundPath,
+          err
+        );
+      } else {
+        log("[Diagnostic Error Sound] Played:", displayName ?? soundPath);
+      }
+    });
+  } catch (err) {
+    log("[Diagnostic Error Sound] Unexpected playback error:", err);
+  }
+}
+
+/**
  * Checks diagnostics for the given document URI and triggers a sound
- * if there is at least one error in that file.
+ * depending on the selected play mode.
  */
 function handleDiagnosticsForUri(
   uri: vscode.Uri,
   context: vscode.ExtensionContext
 ): void {
-  const allDiagnostics = vscode.languages.getDiagnostics(uri);
-  const hasError = allDiagnostics.some(
-    (d) => d.severity === vscode.DiagnosticSeverity.Error
-  );
+  if (!settings.enabled) {
+    return;
+  }
 
-  if (hasError) {
-    playErrorSound(context);
+  // Only consider real file-like documents. This prevents odd edge cases with custom schemes.
+  // (You can relax this later if you want sounds for e.g. "git:" docs.)
+  if (uri.scheme !== "file" && uri.scheme !== "untitled") {
+    return;
+  }
+
+  const allDiagnostics = vscode.languages.getDiagnostics(uri);
+  const errorCount = allDiagnostics.filter(
+    (d) => d.severity === vscode.DiagnosticSeverity.Error
+  ).length;
+
+  const key = uri.toString();
+  const prevCount = lastErrorCountByUri.get(key) ?? 0;
+  lastErrorCountByUri.set(key, errorCount);
+
+  const shouldPlay = (() => {
+    switch (settings.playMode) {
+      case "any":
+        return errorCount > 0;
+      case "increase":
+        return errorCount > 0 && errorCount > prevCount;
+      case "transition":
+      default:
+        return prevCount === 0 && errorCount > 0;
+    }
+  })();
+
+  if (shouldPlay) {
+    playErrorSound(context, key);
   }
 }
 
@@ -109,6 +282,16 @@ function registerDiagnosticListeners(
       handleDiagnosticsForUri(editor.document.uri, context);
     }
   );
+
+  // Reload settings on configuration changes.
+  configurationListenerDisposable = vscode.workspace.onDidChangeConfiguration(
+    (e) => {
+      if (e.affectsConfiguration("diagnosticErrorSound")) {
+        loadSettings();
+        log("[Diagnostic Error Sound] Settings reloaded.");
+      }
+    }
+  );
 }
 
 /**
@@ -116,7 +299,9 @@ function registerDiagnosticListeners(
  * Your extension is activated the very first time any of its activation events are triggered.
  */
 export function activate(context: vscode.ExtensionContext): void {
-  console.log('Extension "diagnostic-error-sound" is now active.');
+  outputChannel = vscode.window.createOutputChannel("Diagnostic Error Sound");
+  loadSettings();
+  log('Extension "diagnostic-error-sound" is now active.');
 
   registerDiagnosticListeners(context);
 
@@ -138,6 +323,18 @@ export function deactivate(): void {
 
   activeEditorListenerDisposable?.dispose();
   activeEditorListenerDisposable = undefined;
+
+  configurationListenerDisposable?.dispose();
+  configurationListenerDisposable = undefined;
+
+  outputChannel?.dispose();
+  outputChannel = undefined;
+
+  // Clear state.
+  lastErrorCountByUri.clear();
+  lastPlayAtByUriMs.clear();
+  didWarnMissingSounds = false;
+  player = undefined;
 
   console.log('Extension "diagnostic-error-sound" has been deactivated.');
 }

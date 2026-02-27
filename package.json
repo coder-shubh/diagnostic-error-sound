@@ -2,7 +2,7 @@
   "name": "diagnostic-error-sound",
   "displayName": "Diagnostic Error Sound",
   "description": "Plays a sound whenever there is a code error in the current file.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "coder-shubh",
   "icon": "media/icon.png",
   "repository": {
@@ -19,7 +19,41 @@
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
-  "contributes": {},
+  "contributes": {
+    "configuration": {
+      "title": "Diagnostic Error Sound",
+      "properties": {
+        "diagnosticErrorSound.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable/disable playing a sound when errors are detected in the current file."
+        },
+        "diagnosticErrorSound.debounceMs": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 0,
+          "description": "Minimum delay between sound plays (milliseconds) to avoid spam."
+        },
+        "diagnosticErrorSound.playMode": {
+          "type": "string",
+          "default": "transition",
+          "enum": ["transition", "increase", "any"],
+          "description": "When to play sound: 'transition' (0->>0 errors), 'increase' (error count increases), or 'any' (errors exist)."
+        },
+        "diagnosticErrorSound.soundFiles": {
+          "type": "array",
+          "default": ["error.mp3", "error2.mp3", "error3.mp3"],
+          "items": { "type": "string" },
+          "description": "Sound files to randomly choose from. Relative paths are resolved under the extension's 'media/' folder; absolute paths are also supported."
+        },
+        "diagnosticErrorSound.player": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Optional: force a specific audio player binary (advanced). Example: 'afplay' (macOS) or 'aplay' (Linux)."
+        }
+      }
+    }
+  },
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",

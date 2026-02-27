@@ -1,0 +1,13 @@
+**/.vscode/**
+**/.vscode-test/**
+**/src/**
+**/*.ts
+tsconfig.json
+*.map
+npm-debug.log*
+**/node_modules/**
+
+# Keep compiled output + media assets
+!out/**
+!media/**
+
