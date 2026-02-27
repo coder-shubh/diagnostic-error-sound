@@ -1,0 +1,39 @@
+{
+  "name": "diagnostic-error-sound",
+  "displayName": "Diagnostic Error Sound",
+  "description": "Plays a sound whenever there is a code error in the current file.",
+  "version": "0.0.2",
+  "publisher": "coder-shubh",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coder-shubh/diagnostic-error-sound.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {},
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "echo \"No linter configured\"",
+    "test": "echo \"No tests configured\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "play-sound": "^1.1.5"
+  },
+  "license": "MIT"
+}
