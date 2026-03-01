@@ -5,9 +5,7 @@
 tsconfig.json
 *.map
 npm-debug.log*
-**/node_modules/**
 
-# Keep compiled output + media assets
-!out/**
-!media/**
+# Do NOT ignore node_modules - the extension needs "play-sound" at runtime.
+# Do NOT ignore out/ or media/ - they are required for the extension to work.
 

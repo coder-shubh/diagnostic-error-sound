@@ -87,7 +87,7 @@ function loadSettings() {
         playMode: cfg.get("playMode", "transition"),
         soundFiles: cfg.get("soundFiles", [
             "error.mp3",
-            "error2.mp3",
+            // "error2.mp3",
             "error3.mp3",
             "error4.mp3",
             "meme_sound.mp3",

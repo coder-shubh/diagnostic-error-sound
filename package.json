@@ -2,7 +2,7 @@
   "name": "diagnostic-error-sound",
   "displayName": "Diagnostic Error Sound",
   "description": "Plays a sound whenever there is a code error in the current file.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "coder-shubh",
   "icon": "media/icon.png",
   "repository": {
