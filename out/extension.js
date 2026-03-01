@@ -47,6 +47,7 @@ const createPlayer = require("play-sound");
 let diagnosticsListenerDisposable;
 let activeEditorListenerDisposable;
 let configurationListenerDisposable;
+let taskProcessListenerDisposable;
 let outputChannel;
 // Tracks last-known error counts per document.
 const lastErrorCountByUri = new Map();
@@ -87,7 +88,12 @@ function loadSettings() {
         soundFiles: cfg.get("soundFiles", [
             "error.mp3",
             "error2.mp3",
-            "error3.mp3"
+            "error3.mp3",
+            "error4.mp3",
+            "meme_sound.mp3",
+            "tehelka_omelet_yeh_leh.mp3",
+            "get_out_meme.mp3",
+            "glup_glup_glup.mp3"
         ]),
         preferredPlayer: cfg.get("player")
     };
@@ -253,6 +259,26 @@ function registerDiagnosticListeners(context) {
     });
 }
 /**
+ * Sets up listeners for VS Code Tasks so we can play a sound
+ * when a task process ends with a non‑zero exit code.
+ *
+ * Note: this only covers tasks run through the VS Code task system
+ * (Run Task, npm script tasks, etc.), not arbitrary commands typed
+ * directly into a regular terminal.
+ */
+function registerTaskListeners(context) {
+    taskProcessListenerDisposable = vscode.tasks.onDidEndTaskProcess((event) => {
+        const exitCode = event.exitCode;
+        if (exitCode === undefined || exitCode === 0) {
+            return;
+        }
+        const task = event.execution.task;
+        const key = `task:${task.source}:${task.name}`;
+        log("[Diagnostic Error Sound] Task failed:", `${task.source}/${task.name}`, "exitCode=", exitCode);
+        playErrorSound(context, key);
+    });
+}
+/**
  * This method is called when your extension is activated.
  * Your extension is activated the very first time any of its activation events are triggered.
  */
@@ -261,6 +287,7 @@ function activate(context) {
     loadSettings();
     log('Extension "diagnostic-error-sound" is now active.');
     registerDiagnosticListeners(context);
+    registerTaskListeners(context);
     // When the extension activates, immediately check the current active editor
     // for existing errors so the user gets feedback right away.
     const activeEditor = vscode.window.activeTextEditor;
@@ -279,6 +306,8 @@ function deactivate() {
     activeEditorListenerDisposable = undefined;
     configurationListenerDisposable?.dispose();
     configurationListenerDisposable = undefined;
+    taskProcessListenerDisposable?.dispose();
+    taskProcessListenerDisposable = undefined;
     outputChannel?.dispose();
     outputChannel = undefined;
     // Clear state.
